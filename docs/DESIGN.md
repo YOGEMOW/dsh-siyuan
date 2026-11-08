@@ -2,7 +2,7 @@
 
 > 承接思源笔记 `/领域知识库/AI/DeepSeek Harness/DSH项目/思源接入DSH-方案计划`（v1，写于另一台电脑）。
 > 本文件记录「在本机真正把这个插件做出来」的架构、取舍、与原方案的偏差、验证结果。
-> 实现位于 `E:\DSH-workspace\dsh-siyuan`，包名 `@local/dsh-siyuan`，已以 link 方式装进 `desktop` profile。
+> 实现位于 `E:\DSH-workspace\dsh-siyuan`，包名 `@yogemow/dsh-siyuan`，已以 link 方式装进 `desktop` profile。
 
 ---
 
@@ -139,7 +139,7 @@
 
 ## 八、验证记录（本机实测）
 
-- **装载**：`plugin_manager install_bundle` → `application: applied`，link 依赖 `@local/dsh-siyuan`。
+- **装载**：`plugin_manager install_bundle` → `application: applied`，link 依赖 `@yogemow/dsh-siyuan`。
 - **工具**：9 个全部出现在 Agent 工具表；`siyuan_status` 返回 3.8.9 + 9 个笔记本；`siyuan_search` / `siyuan_read_doc` / `siyuan_sql` / `siyuan_open` 实测通过；`siyuan_create_doc` 在 `write=false` 时返回 `SIYUAN_WRITE_DISABLED`。
 - **路由**：`GET /siyuan/status` 形状正确（含顶层 `write`）；写路由缺头 → 400；`/siyuan/test` 探活通过；`/siyuan/doc` / `/siyuan/search` 正常。
 - **Client**：`Slots.listSubTree` 四处均 active —— `sidebar.panellist#siyuan`、`main#siyuan`、`settings.section#siyuan`、`conversation.chat.assistant-actions#siyuan-save`。

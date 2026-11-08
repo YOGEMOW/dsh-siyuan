@@ -1,6 +1,6 @@
 # dsh-siyuan · Host ⇄ Client 契约（v1）
 
-插件包名 `@local/dsh-siyuan`，Host 入口 `index.js`，Client 入口 `client.js`。
+插件包名 `@yogemow/dsh-siyuan`，Host 入口 `index.js`，Client 入口 `client.js`。
 Client 只通过下面这组同源 HTTP 路由与 Host 通信；**Token 永不进浏览器**。
 
 路由前缀 `/siyuan`，刻意避开 `/api`（`/api` 由宿主 connection 共享 handler 接管并要求认证）。
@@ -163,7 +163,7 @@ POST（只提交要改的字段）：
 
 # Client 侧要求（client.js）
 
-文件形态照抄宿主模板：`window.__ModuleLoader__.load({ id: '@local/dsh-siyuan', factory(require){ ... } })`，
+文件形态照抄宿主模板：`window.__ModuleLoader__.load({ id: '@yogemow/dsh-siyuan', factory(require){ ... } })`，
 模块 id 必须等于包名。React 从 `require('react')` 取，纯 `React.createElement`（`const h = React.createElement`），
 **不要用 JSX、不要 import 任何宿主 Client 包**。
 

@@ -1,6 +1,6 @@
 {
-  "name": "@local/dsh-siyuan",
-  "version": "0.3.4",
+  "name": "@yogemow/dsh-siyuan",
+  "version": "0.3.5",
   "type": "module",
   "license": "MIT",
   "author": "YOGEMOW",

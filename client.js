@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: '@local/dsh-siyuan',
+  id: '@yogemow/dsh-siyuan',
   factory(require) {
     const React = require('react')
     const h = React.createElement
