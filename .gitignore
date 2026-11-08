@@ -1,0 +1,8 @@
+# Dependencies and local scratch output are never published.
+/node_modules/
+*.log
+.DS_Store
+Thumbs.db
+
+# 本地排障 / 临时文件
+.tmp*

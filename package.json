@@ -1,0 +1,53 @@
+{
+  "name": "@local/dsh-siyuan",
+  "version": "0.3.4",
+  "type": "module",
+  "license": "MIT",
+  "author": "YOGEMOW",
+  "description": "把思源笔记 (SiYuan) 接入 DeepSeek Harness：Agent 能搜/读/写笔记；左栏按文档树浏览；右栏边聊边读（Agentero 风格）；回答旁可一键存入。",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YOGEMOW/dsh-siyuan.git"
+  },
+  "homepage": "https://github.com/YOGEMOW/dsh-siyuan#readme",
+  "bugs": {
+    "url": "https://github.com/YOGEMOW/dsh-siyuan/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "siyuan",
+    "notes",
+    "知识库",
+    "思源笔记"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  }
+}
