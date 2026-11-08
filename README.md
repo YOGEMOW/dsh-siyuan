@@ -2,7 +2,7 @@
 
 把 **思源笔记 (SiYuan)** 接入 **DeepSeek Harness**：Agent 能搜/读/写笔记，左侧栏能浏览检索，每条回答旁能一键存入思源。全部走思源内核 HTTP API，不碰 `.sy` 文件、不直连 `siyuan.db`。
 
-- 包名：`@yogemow/dsh-siyuan`（本地 private 包，link 装进 `desktop` profile）
+- 包名：`@yogemow/dsh-siyuan`（scoped，GitHub 仓库同名；以 link 方式装进 `desktop` profile）
 - 入口：`index.js`（Host 工具 + `/siyuan/*` 路由）、`client.js`（侧栏面板 / 设置页 / 回答动作）
 - 设计说明：[docs/DESIGN.md](docs/DESIGN.md) · 内核 API 复核：[docs/KERNEL-NOTES.md](docs/KERNEL-NOTES.md) · Client 契约：[docs/CONTRACT.md](docs/CONTRACT.md)
 
