@@ -3921,6 +3921,34 @@ window.__ModuleLoader__.load({
         localHost = true
       }
 
+      // 排障：把页面真实 hostname / embedBase 记到 Host 的 diag.log（每次 embedBase 变化一次）
+      const diagSentRef = React.useRef('')
+      React.useEffect(
+        function () {
+          const key = embedBase + '|' + String(localHost)
+          if (!embedBase || diagSentRef.current === key) return
+          diagSentRef.current = key
+          try {
+            const location = typeof window !== 'undefined' && window.location ? window.location : null
+            fetch('/siyuan/diag', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-dsh-siyuan': '1' },
+              body: JSON.stringify({
+                where: 'embed-mount',
+                pageHost: location ? String(location.hostname) : '',
+                pageHref: location ? String(location.href) : '',
+                embedBase: embedBase,
+                localHost: localHost,
+                docId: docId
+              })
+            }).catch(function () {})
+          } catch (error) {
+            /* 排障失败不影响显示 */
+          }
+        },
+        [embedBase, localHost, docId]
+      )
+
       const toolbar = h(
         'div',
         {
@@ -3969,24 +3997,26 @@ window.__ModuleLoader__.load({
         )
       )
 
+      const iframeEl = src
+        ? h('iframe', {
+            key: 'siyuan-embed-' + String(reloadKey),
+            src: src,
+            title: '思源笔记',
+            allow: 'clipboard-read; clipboard-write',
+            style: {
+              display: 'block',
+              width: '100%',
+              height: '100%',
+              flex: '1 1 auto',
+              minHeight: 0,
+              border: 0,
+              background: T.bg
+            }
+          })
+        : null
+
       let frame
-      if (!localHost) {
-        frame = h(
-          'div',
-          { style: { display: 'grid', gap: 10, padding: 16, alignContent: 'start' } },
-          h(
-            'div',
-            { style: { fontSize: 12, lineHeight: '20px', color: T.sub } },
-            '远程访问下无法嵌入思源界面：嵌入代理只监听本机 127.0.0.1。请切到「简易视图」，或在浏览器里直接打开思源。'
-          ),
-          h(
-            GhostButton,
-            { small: true, kind: 'primary', disabled: busy, onClick: switchMode },
-            busy ? '切换中…' : '切换简易视图'
-          ),
-          actionFail ? h(FailLine, { fail: actionFail, prefix: '切换失败：' }) : null
-        )
-      } else if (!endpoint) {
+      if (!endpoint) {
         frame = h(
           'div',
           { style: { display: 'grid', gap: 10, padding: 16, alignContent: 'start' } },
@@ -4017,22 +4047,38 @@ window.__ModuleLoader__.load({
             ? h(FailLine, { fail: settingsFail, prefix: '读取设置失败：', onRetry: loadEndpoint })
             : null
         )
+      } else if (!localHost) {
+        // 主机名不是回环时只提示、不拦死：桌面容器/自定义 hostname 其实可能连得通
+        frame = h(
+          'div',
+          { style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 } },
+          h(
+            'div',
+            {
+              style: {
+                padding: '6px 12px',
+                fontSize: 12,
+                lineHeight: '20px',
+                color: T.sub,
+                borderBottom: '1px solid ' + T.border1,
+                flex: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                flexWrap: 'wrap'
+              }
+            },
+            '如果你不是从本机 127.0.0.1 打开 DSH，这个嵌入会打不开（代理只监听本机）。',
+            h(
+              GhostButton,
+              { small: true, kind: 'primary', disabled: busy, onClick: switchMode },
+              busy ? '切换中…' : '切换简易视图'
+            )
+          ),
+          iframeEl
+        )
       } else {
-        frame = h('iframe', {
-          key: 'siyuan-embed-' + String(reloadKey),
-          src: src,
-          title: '思源笔记',
-          allow: 'clipboard-read; clipboard-write',
-          style: {
-            display: 'block',
-            width: '100%',
-            height: '100%',
-            flex: '1 1 auto',
-            minHeight: 0,
-            border: 0,
-            background: T.bg
-          }
-        })
+        frame = iframeEl
       }
 
       return h(
