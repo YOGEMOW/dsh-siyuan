@@ -905,7 +905,18 @@ function makeHttpHandler(ctx) {
 
       if (pathname === `${ROUTE_PREFIX}/open` && method === 'POST') {
         const body = await readJsonBody(req)
-        send(200, openLinks(endpoint, body.id))
+        const clean = String(body.id || '').trim()
+        if (!clean) throw fail('SIYUAN_INVALID_ARGUMENT', 'id 不能为空')
+        // 先确认目标还在：文档被删/移动后直接打开，思源只会弹
+        // "document tree item is unavailable"，不如在这里给一句能懂的话。
+        const row = await blockRow(endpoint, token, clean)
+        if (!row) {
+          throw fail(
+            'SIYUAN_NOT_FOUND',
+            '这篇文档/块已经不在了（可能被删除或移动过），无法在思源里打开；请在文档树里重新选一篇。'
+          )
+        }
+        send(200, openLinks(endpoint, clean))
         return
       }
 
