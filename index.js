@@ -904,21 +904,12 @@ function denyEmbed(res, reason) {
   }
 }
 
-function embedProxyGate(req, res) {
+function handleEmbedProxyRequest(req, res) {
   const port = embedProxy.port
   if (!embedHostAllowed(req.headers && req.headers.host, port)) {
     denyEmbed(res, '主机名不匹配')
-    return false
+    return
   }
-  if (embedIsCrossSite(req)) {
-    denyEmbed(res, '跨站请求')
-    return false
-  }
-  return true
-}
-
-function handleEmbedProxyRequest(req, res) {
-  if (!embedProxyGate(req, res)) return
   let url
   try {
     url = new URL(req.url || '/', 'http://127.0.0.1')
@@ -926,43 +917,53 @@ function handleEmbedProxyRequest(req, res) {
     denyEmbed(res, '地址无效')
     return
   }
-  // 一次性入口：种凭证 cookie 后跳到真实路径（凭证不会留在地址栏/Referer 里）
-  if (url.pathname === EMBED_ENTRY_PREFIX || url.pathname === EMBED_ENTRY_PREFIX.slice(0, -1)) {
-    const location = '/' + (url.search || '')
-    try {
-      res.writeHead(302, {
-        'set-cookie': `${EMBED_COOKIE_NAME}=${EMBED_SECRET}; Path=/; HttpOnly; SameSite=Strict`,
-        location,
-        'cache-control': 'no-store'
-      })
-      res.end()
-    } catch {
-      /* 连接已断开 */
+  const entryPath =
+    url.pathname === EMBED_ENTRY_PREFIX || url.pathname === EMBED_ENTRY_PREFIX.slice(0, -1)
+  if (!entryPath) {
+    if (embedIsCrossSite(req)) {
+      denyEmbed(res, '跨站请求')
+      return
     }
-    return
-  }
-  if (!embedOriginAllowed(req.headers && req.headers.origin, embedProxy.port)) {
-    denyEmbed(res, '来源不匹配')
-    return
-  }
-  if (!embedTokenOk(req)) {
-    denyEmbed(res, '未持有嵌入凭证')
-    return
+    if (!embedOriginAllowed(req.headers && req.headers.origin, port)) {
+      denyEmbed(res, '来源不匹配')
+      return
+    }
+    if (!embedTokenOk(req)) {
+      denyEmbed(res, '未持有嵌入凭证')
+      return
+    }
   }
 
   const target = embedProxy.target || parseEndpointTarget(DEFAULT_ENDPOINT)
   const transport = target.secure ? https : http
+  // 入口导航来自 DSH 页面。桌面端页面是 dsh-app:// 自定义协议，对 http 代理必然
+  // 是跨站请求，所以入口只认路径里的随机凭证、允许跨站；并且不能做 302
+  // （SameSite=Strict 的 cookie 不会跟随跨站跳转发送），直接返回桌面端构建页并种 cookie。
+  const requestPath = entryPath
+    ? '/stage/build/desktop/' + (url.search || '')
+    : req.url
   const upstream = transport.request(
     {
       host: target.host,
       port: target.port,
-      path: req.url,
+      path: requestPath,
       method: req.method,
       headers: proxyRequestHeaders(req, target)
     },
     (upstreamResponse) => {
+      const headers = proxyResponseHeaders(upstreamResponse.headers)
+      if (entryPath) {
+        const cookie = `${EMBED_COOKIE_NAME}=${EMBED_SECRET}; Path=/; HttpOnly; SameSite=Strict`
+        const existing = headers['set-cookie']
+        headers['set-cookie'] = Array.isArray(existing)
+          ? existing.concat([cookie])
+          : existing
+            ? [existing, cookie]
+            : [cookie]
+        headers['cache-control'] = 'no-store'
+      }
       try {
-        res.writeHead(upstreamResponse.statusCode || 502, proxyResponseHeaders(upstreamResponse.headers))
+        res.writeHead(upstreamResponse.statusCode || 502, headers)
       } catch {
         /* 响应头已发送 */
       }

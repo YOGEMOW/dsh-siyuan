@@ -3920,6 +3920,16 @@ window.__ModuleLoader__.load({
       } catch (error) {
         localHost = true
       }
+      // DSH 桌面端页面是 dsh-app:// 自定义协议，必然「跨站」但对代理是受支持的入口
+      let desktopShell = false
+      try {
+        desktopShell =
+          typeof window !== 'undefined' && window.location
+            ? String(window.location.protocol || '') === 'dsh-app:'
+            : false
+      } catch (error) {
+        desktopShell = false
+      }
 
       // 排障：把页面真实 hostname / embedBase 记到 Host 的 diag.log（每次 embedBase 变化一次）
       const diagSentRef = React.useRef('')
@@ -4047,7 +4057,7 @@ window.__ModuleLoader__.load({
             ? h(FailLine, { fail: settingsFail, prefix: '读取设置失败：', onRetry: loadEndpoint })
             : null
         )
-      } else if (!localHost) {
+      } else if (!localHost && !desktopShell) {
         // 主机名不是回环时只提示、不拦死：桌面容器/自定义 hostname 其实可能连得通
         frame = h(
           'div',
