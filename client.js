@@ -581,7 +581,6 @@ window.__ModuleLoader__.load({
       const [write, setWrite] = React.useState(false)
       const [showViewTab, setShowViewTab] = React.useState(true)
       const [showComposerButton, setShowComposerButton] = React.useState(true)
-      const [viewMode, setViewMode] = React.useState('embed')
       const [notebooks, setNotebooks] = React.useState([])
       const [busy, setBusy] = React.useState('')
       const [notice, setNotice] = React.useState(null)
@@ -605,7 +604,6 @@ window.__ModuleLoader__.load({
           setWrite(!!settings.write)
           setShowViewTab(settings.showViewTab !== false)
           setShowComposerButton(settings.showComposerButton !== false)
-          setViewMode(settings.viewMode === 'lite' ? 'lite' : 'embed')
           setTokenConfigured(!!res.tokenConfigured)
           const list = await getJSON('/notebooks', signalOf(controller))
           if (!alive.current) return
@@ -633,8 +631,7 @@ window.__ModuleLoader__.load({
             defaultDoc: defaultDoc.trim(),
             write: !!write,
             showViewTab: !!showViewTab,
-            showComposerButton: !!showComposerButton,
-            viewMode: viewMode === 'lite' ? 'lite' : 'embed'
+            showComposerButton: !!showComposerButton
           }
           if (token.trim()) body.token = token.trim()
           const res = await postJSON('/settings', body, signalOf(controller))
@@ -651,14 +648,12 @@ window.__ModuleLoader__.load({
           setWrite(!!settings.write)
           setShowViewTab(settings.showViewTab !== false)
           setShowComposerButton(settings.showComposerButton !== false)
-          setViewMode(settings.viewMode === 'lite' ? 'lite' : 'embed')
           setTokenConfigured(!!res.tokenConfigured)
           setToken('')
           // 两个入口开关就地生效（不用刷新）
-          applySettingsFlags(settings, res.embedBase)
+          applySettingsFlags(settings)
           setShowViewTab(uiFlags.showViewTab)
           setShowComposerButton(uiFlags.showComposerButton)
-          setViewMode(uiFlags.viewMode)
           setNotice({
             tone: 'ok',
             text: uiFlags.showViewTab
@@ -667,7 +662,7 @@ window.__ModuleLoader__.load({
           })
           if (typeof props.onSaved === 'function') props.onSaved(settings)
         },
-        [alive, track, endpoint, defaultNotebook, defaultDoc, write, showViewTab, showComposerButton, viewMode, token, props]
+        [alive, track, endpoint, defaultNotebook, defaultDoc, write, showViewTab, showComposerButton, token, props]
       )
 
       const test = React.useCallback(
@@ -813,39 +808,6 @@ window.__ModuleLoader__.load({
                 }),
                 h('div', { style: { fontSize: 12, color: T.dim, lineHeight: '18px' } },
                   '只影响这两个入口；左栏「思源笔记」面板与右栏标签不受影响，保存后立即生效。'
-                )
-              ),
-              h('div', {
-                style: {
-                  display: 'grid',
-                  gap: 8,
-                  padding: '10px 12px',
-                  borderRadius: 8,
-                  border: '1px solid ' + T.border1,
-                  background: T.layer2
-                }
-              },
-                h('div', { style: { fontSize: 12, color: T.sub } }, '显示方式'),
-                h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-                  h(GhostButton, {
-                    small: true,
-                    kind: viewMode === 'embed' ? 'primary' : 'ghost',
-                    onClick: function () {
-                      setViewMode('embed')
-                    }
-                  }, '完整界面'),
-                  h(GhostButton, {
-                    small: true,
-                    kind: viewMode === 'lite' ? 'primary' : 'ghost',
-                    onClick: function () {
-                      setViewMode('lite')
-                    }
-                  }, '简易视图')
-                ),
-                h('div', { style: { fontSize: 12, color: T.dim, lineHeight: '18px' } },
-                  viewMode === 'embed'
-                    ? '完整界面（推荐）：把思源自己的网页完整嵌进来，功能和浏览器里一样；需要思源正在运行。'
-                    : '简易视图：文档树 + Markdown 预览，轻量但不能编辑，适合快速翻看。'
                 )
               ),
               h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
@@ -2113,6 +2075,11 @@ window.__ModuleLoader__.load({
         }, statusLoading ? '刷新中…' : '刷新'),
         h(GhostButton, {
           small: true,
+          title: '在浏览器里打开思源原生界面（完整功能）',
+          onClick: openSiYuanInBrowser
+        }, '浏览器打开'),
+        h(GhostButton, {
+          small: true,
           title: '折叠全部并回到顶部；若设置了默认文档则打开它',
           onClick: resetView
         }, '重置'),
@@ -3185,6 +3152,11 @@ window.__ModuleLoader__.load({
           h(GhostButton, { small: true, onClick: refresh }, '刷新'),
           h(GhostButton, {
             small: true,
+            title: '在浏览器里打开思源原生界面（完整功能）',
+            onClick: openSiYuanInBrowser
+          }, '浏览器打开'),
+          h(GhostButton, {
+            small: true,
             title: '折叠全部并回到顶部；若设置了默认文档则打开它',
             onClick: resetView
           }, '重置'),
@@ -3819,325 +3791,6 @@ window.__ModuleLoader__.load({
     }
 
     // ─────────────────────────────────────────────────────────────
-    // 完整界面：把思源自己的 Web UI 用 iframe 嵌进来
-    // 只做外壳（工具条 + iframe），不读 iframe DOM、不注入样式、不加 sandbox
-    // ─────────────────────────────────────────────────────────────
-    function SiyuanEmbed(props) {
-      const compact = !!(props && props.compact)
-      const docId = textOf(props && props.docId)
-      const alive = useAlive()
-      const track = useRequests()
-      const ui = useUiFlags()
-
-      const [endpoint, setEndpoint] = React.useState('')
-      const [embedBase, setEmbedBase] = React.useState('')
-      const [loading, setLoading] = React.useState(true)
-      const [reloadKey, setReloadKey] = React.useState(1)
-      const [busy, setBusy] = React.useState(false)
-      const [settingsFail, setSettingsFail] = React.useState(null)
-      const [actionFail, setActionFail] = React.useState(null)
-
-      const loadEndpoint = React.useCallback(
-        async function () {
-          const controller = track()
-          setLoading(true)
-          setSettingsFail(null)
-          const res = await getJSON('/settings', signalOf(controller))
-          if (!alive.current) return
-          setLoading(false)
-          if (!res.ok) {
-            setSettingsFail(pickFail(res))
-            return
-          }
-          const settings = res.settings && typeof res.settings === 'object' ? res.settings : {}
-          setEndpoint(textOf(settings.endpoint).replace(/\/+$/, ''))
-          setEmbedBase(textOf(res.embedBase))
-        },
-        [alive, track]
-      )
-
-      React.useEffect(
-        function () {
-          loadEndpoint()
-        },
-        [loadEndpoint]
-      )
-
-      const refresh = React.useCallback(
-        function () {
-          setActionFail(null)
-          setReloadKey(function (current) {
-            return current + 1
-          })
-          loadEndpoint()
-        },
-        [loadEndpoint]
-      )
-
-      const openExternal = React.useCallback(
-        function () {
-          if (!endpoint) return
-          try {
-            if (typeof window !== 'undefined' && typeof window.open === 'function') {
-              window.open(endpoint + '/', '_blank', 'noopener,noreferrer')
-            }
-          } catch (error) {
-            /* 静默：浏览器可能拦截弹窗 */
-          }
-        },
-        [endpoint]
-      )
-
-      const switchMode = React.useCallback(
-        async function () {
-          const nextMode = ui.viewMode === 'lite' ? 'embed' : 'lite'
-          const controller = track()
-          setBusy(true)
-          setActionFail(null)
-          const res = await postJSON('/settings', { viewMode: nextMode }, signalOf(controller))
-          if (!alive.current) return
-          setBusy(false)
-          if (!res.ok) {
-            setActionFail(pickFail(res))
-            return
-          }
-          setUiFlags({ viewMode: nextMode })
-        },
-        [alive, track, ui.viewMode]
-      )
-
-      // 思源内核拒绝浏览器跨站请求，iframe 必须走 Host 的本机反向代理（embedBase）
-      const src = embedBase
-        ? docId
-          ? embedBase + '?id=' + encodeURIComponent(docId)
-          : embedBase
-        : ''
-
-      let localHost = true
-      try {
-        const host = typeof window !== 'undefined' && window.location ? window.location.hostname : ''
-        localHost = host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]' || host === ''
-      } catch (error) {
-        localHost = true
-      }
-      // DSH 桌面端页面是 dsh-app:// 自定义协议，必然「跨站」但对代理是受支持的入口
-      let desktopShell = false
-      try {
-        desktopShell =
-          typeof window !== 'undefined' && window.location
-            ? String(window.location.protocol || '') === 'dsh-app:'
-            : false
-      } catch (error) {
-        desktopShell = false
-      }
-
-      // 排障：把页面真实 hostname / embedBase 记到 Host 的 diag.log（每次 embedBase 变化一次）
-      const diagSentRef = React.useRef('')
-      React.useEffect(
-        function () {
-          const key = embedBase + '|' + String(localHost)
-          if (!embedBase || diagSentRef.current === key) return
-          diagSentRef.current = key
-          try {
-            const location = typeof window !== 'undefined' && window.location ? window.location : null
-            fetch('/siyuan/diag', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'x-dsh-siyuan': '1' },
-              body: JSON.stringify({
-                where: 'embed-mount',
-                pageHost: location ? String(location.hostname) : '',
-                pageHref: location ? String(location.href) : '',
-                embedBase: embedBase,
-                localHost: localHost,
-                docId: docId
-              })
-            }).catch(function () {})
-          } catch (error) {
-            /* 排障失败不影响显示 */
-          }
-        },
-        [embedBase, localHost, docId]
-      )
-
-      const toolbar = h(
-        'div',
-        {
-          style: {
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: compact ? '6px 8px' : '6px 12px',
-            borderBottom: '1px solid ' + T.border1,
-            flex: 'none',
-            flexWrap: 'wrap',
-            minWidth: 0
-          }
-        },
-        h('span', { style: { fontSize: 13, fontWeight: 600, color: T.text, flex: 'none' } }, '思源笔记'),
-        compact || !endpoint
-          ? h('span', { style: { flex: '1 1 auto', minWidth: 0 } })
-          : h(
-              'span',
-              {
-                style: {
-                  flex: '1 1 auto',
-                  minWidth: 0,
-                  fontSize: 12,
-                  color: T.dim,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap'
-                },
-                title: endpoint
-              },
-              endpoint
-            ),
-        h(GhostButton, { small: true, title: '重新加载思源界面', onClick: refresh }, '刷新'),
-        compact ? null : h(GhostButton, { small: true, disabled: !endpoint, onClick: openExternal }, '在浏览器打开'),
-        h(
-          GhostButton,
-          {
-            small: true,
-            kind: 'primary',
-            disabled: busy || !endpoint,
-            title: '在「完整界面」与「简易视图」之间切换',
-            onClick: switchMode
-          },
-          busy ? '切换中…' : ui.viewMode === 'lite' ? '完整界面' : '简易视图'
-        )
-      )
-
-      const iframeEl = src
-        ? h('iframe', {
-            key: 'siyuan-embed-' + String(reloadKey),
-            src: src,
-            title: '思源笔记',
-            allow: 'clipboard-read; clipboard-write',
-            style: {
-              display: 'block',
-              width: '100%',
-              height: '100%',
-              flex: '1 1 auto',
-              minHeight: 0,
-              border: 0,
-              background: T.bg
-            }
-          })
-        : null
-
-      let frame
-      if (!endpoint) {
-        frame = h(
-          'div',
-          { style: { display: 'grid', gap: 10, padding: 16, alignContent: 'start' } },
-          loading
-            ? h('div', { style: { fontSize: 12, color: T.dim } }, '读取设置…')
-            : h(
-                'div',
-                { style: { fontSize: 12, lineHeight: '20px', color: T.sub } },
-                '还没有配置思源地址：先在「设置 → 思源笔记」里填好端点（例如 http://127.0.0.1:6806），再回到这里。'
-              ),
-          settingsFail
-            ? h(FailLine, { fail: settingsFail, prefix: '读取设置失败：', onRetry: loadEndpoint })
-            : null
-        )
-      } else if (!embedBase) {
-        frame = h(
-          'div',
-          { style: { display: 'grid', gap: 10, padding: 16, alignContent: 'start' } },
-          h(
-            'div',
-            { style: { fontSize: 12, lineHeight: '20px', color: T.sub } },
-            loading
-              ? '正在准备嵌入代理…'
-              : '嵌入代理还没就绪：Host 没有返回代理地址。可点「刷新」重试；一直不行就切「简易视图」，或看 Host 日志里 dsh-siyuan 的提示。'
-          ),
-          h(GhostButton, { small: true, onClick: refresh }, '刷新'),
-          settingsFail
-            ? h(FailLine, { fail: settingsFail, prefix: '读取设置失败：', onRetry: loadEndpoint })
-            : null
-        )
-      } else if (!localHost && !desktopShell) {
-        // 主机名不是回环时只提示、不拦死：桌面容器/自定义 hostname 其实可能连得通
-        frame = h(
-          'div',
-          { style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 } },
-          h(
-            'div',
-            {
-              style: {
-                padding: '6px 12px',
-                fontSize: 12,
-                lineHeight: '20px',
-                color: T.sub,
-                borderBottom: '1px solid ' + T.border1,
-                flex: 'none',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                flexWrap: 'wrap'
-              }
-            },
-            '如果你不是从本机 127.0.0.1 打开 DSH，这个嵌入会打不开（代理只监听本机）。',
-            h(
-              GhostButton,
-              { small: true, kind: 'primary', disabled: busy, onClick: switchMode },
-              busy ? '切换中…' : '切换简易视图'
-            )
-          ),
-          iframeEl
-        )
-      } else {
-        frame = iframeEl
-      }
-
-      return h(
-        'div',
-        {
-          style: {
-            display: 'flex',
-            flexDirection: 'column',
-            height: '100%',
-            minHeight: 0,
-            minWidth: 0,
-            background: T.bg,
-            color: T.text
-          }
-        },
-        toolbar,
-        actionFail
-          ? h(
-              'div',
-              { style: { padding: '6px 12px', flex: 'none' } },
-              h(FailLine, { fail: actionFail, prefix: '切换失败：' })
-            )
-          : null,
-        h(
-          'div',
-          { style: { flex: '1 1 auto', minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' } },
-          frame
-        )
-      )
-    }
-
-    /** 左栏 / 对话区视图：按 viewMode 二选一（embed 优先，lite 为简易视图）。 */
-    function SiyuanSurfaceView(props) {
-      const ui = useUiFlags()
-      const note = useCurrentNote()
-      const surface = textOf(props && props.surface) || 'left'
-      if (ui.viewMode === 'lite') return h(MainPanel, { surface: surface })
-      return h(SiyuanEmbed, { docId: note && note.id })
-    }
-
-    /** 右栏标签：embed 时窄栏 iframe，lite 时原来的文档树视图。 */
-    function SiyuanRightSidebarView() {
-      const ui = useUiFlags()
-      const note = useCurrentNote()
-      if (ui.viewMode === 'lite') return h(NoteSidebarView, null)
-      return h(SiyuanEmbed, { compact: true, docId: note && note.id })
-    }
-
-    // ─────────────────────────────────────────────────────────────
     // 会话输入栏入口：点一下打开右栏「思源笔记」
     // ─────────────────────────────────────────────────────────────
     function SiyuanInputButton() {
@@ -4232,20 +3885,51 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * 在浏览器里打开思源原生的 Web 界面。
+     * 不做 iframe 内嵌：DSH 桌面端页面是 dsh-app:// 自定义协议，对 http 代理属跨站，
+     * SameSite=Strict 的 cookie 在跨站子框架里不生效，资源会全部 403。
+     */
+    function openSiYuanInBrowser() {
+      const launch = function (endpoint) {
+        const base = (textOf(endpoint) || 'http://127.0.0.1:6806').replace(/\/+$/, '')
+        try {
+          if (typeof window !== 'undefined' && typeof window.open === 'function') {
+            window.open(base + '/', '_blank', 'noopener,noreferrer')
+          }
+        } catch (error) {
+          /* 弹窗被拦截时静默 */
+        }
+      }
+      try {
+        fetch('/siyuan/settings')
+          .then(function (response) {
+            return response.json()
+          })
+          .then(function (result) {
+            const settings = result && result.settings && typeof result.settings === 'object' ? result.settings : {}
+            launch(settings.endpoint)
+          })
+          .catch(function () {
+            launch('http://127.0.0.1:6806')
+          })
+      } catch (error) {
+        launch('http://127.0.0.1:6806')
+      }
+    }
+
     // ─────────────────────────────────────────────────────────────
-    // UI 开关 / 显示方式：对话区页签、输入框按钮、完整界面 or 简易视图
+    // UI 开关：对话区「思源笔记」页签 / 输入框「思源」按钮
     // 模块级状态 + 订阅，设置里保存后即时生效（不刷新）
     // ─────────────────────────────────────────────────────────────
-    let uiFlags = { showViewTab: true, showComposerButton: true, viewMode: 'embed', embedBase: '' }
+    let uiFlags = { showViewTab: true, showComposerButton: true }
     const uiSubscribers = new Set()
 
     function normalizeUiFlags(source) {
       const value = source && typeof source === 'object' ? source : {}
       return {
         showViewTab: value.showViewTab !== false,
-        showComposerButton: value.showComposerButton !== false,
-        viewMode: value.viewMode === 'lite' ? 'lite' : 'embed',
-        embedBase: textOf(value.embedBase)
+        showComposerButton: value.showComposerButton !== false
       }
     }
 
@@ -4253,18 +3937,9 @@ window.__ModuleLoader__.load({
       return uiFlags
     }
 
-    function sameUiFlags(a, b) {
-      return (
-        a.showViewTab === b.showViewTab &&
-        a.showComposerButton === b.showComposerButton &&
-        a.viewMode === b.viewMode &&
-        a.embedBase === b.embedBase
-      )
-    }
-
     function setUiFlags(patch) {
       const next = normalizeUiFlags(Object.assign({}, uiFlags, patch || {}))
-      if (sameUiFlags(next, uiFlags)) {
+      if (next.showViewTab === uiFlags.showViewTab && next.showComposerButton === uiFlags.showComposerButton) {
         uiFlags = next
         return
       }
@@ -4313,7 +3988,7 @@ window.__ModuleLoader__.load({
               }
             },
             function SiyuanConversationView() {
-              return h(SiyuanSurfaceView, { surface: 'middle' })
+              return h(MainPanel, { surface: 'middle' })
             }
           )
         })
@@ -4351,14 +4026,12 @@ window.__ModuleLoader__.load({
       return false
     }
 
-    /** 从 settings 对象同步入口开关与显示方式（缺字段按默认：都显示 / 完整界面）。 */
-    function applySettingsFlags(settings, embedBase) {
+    /** 从 settings 对象同步两个入口开关（缺字段一律当 true）。 */
+    function applySettingsFlags(settings) {
       const value = settings && typeof settings === 'object' ? settings : {}
       setUiFlags({
         showViewTab: value.showViewTab !== false,
-        showComposerButton: value.showComposerButton !== false,
-        viewMode: value.viewMode === 'lite' ? 'lite' : 'embed',
-        embedBase: textOf(embedBase)
+        showComposerButton: value.showComposerButton !== false
       })
       syncConversationView(uiFlags.showViewTab)
     }
@@ -4418,7 +4091,7 @@ window.__ModuleLoader__.load({
         })
 
         ctx.slots.inject('main', function () {
-          return ctx.slots.register({ name: 'main', key: 'siyuan' }, SiyuanSurfaceView)
+          return ctx.slots.register({ name: 'main', key: 'siyuan' }, MainPanel)
         })
 
         // 对话区顶部「视图」行里的思源页签：动态注册（设置里可关）
@@ -4428,7 +4101,7 @@ window.__ModuleLoader__.load({
           getJSON('/settings')
             .then(function (res) {
               if (res && res.ok && res.settings && typeof res.settings === 'object') {
-                applySettingsFlags(res.settings, res.embedBase)
+                applySettingsFlags(res.settings)
               }
             })
             .catch(function () {
@@ -4539,7 +4212,7 @@ window.__ModuleLoader__.load({
                     owner.slots.inject('sidebar.right.pane.tab', function () {
                       return owner.slots.register(
                         { name: 'sidebar.right.pane.tab', key: SIDEBAR_TAB_ID },
-                        SiyuanRightSidebarView
+                        NoteSidebarView
                       )
                     })
                   )

@@ -92,18 +92,6 @@ Client 只通过下面这组同源 HTTP 路由与 Host 通信；**Token 永不�
 
 关闭后左栏「思源笔记」面板与右侧栏「思源笔记」标签不受影响。客户端保存设置后就地生效。
 
-## 设置项 `viewMode`
-
-`'embed' | 'lite'`，默认 `'embed'`：三个界面入口（左栏 main、对话区 `conversation.view`、右栏 tab）按它二选一。
-
-- `embed`：iframe 嵌入思源 Web UI。**不能直接指 `endpoint`**：思源内核会拒绝浏览器的跨站请求（`Sec-Fetch-Site` 非 `same-origin`/`none` 时返回 401「不允许跨站请求」）。Host 在 `127.0.0.1` 上起一个带凭证的透明反向代理（默认 48766，被占用则随机回环端口；`SIYUAN_EMBED_PORT` 可覆盖首选端口）：
-  - `GET /siyuan/settings` / `GET /siyuan/status` 返回顶层 `embedBase`（如 `http://127.0.0.1:48766/__embed/<随机凭证>/`）；iframe 用它（可再拼 `?id=<docId>`）。
-  - 入口地址只做一次 302：种 `HttpOnly; SameSite=Strict` cookie 后跳到真实路径；之后所有请求（含 WebSocket）都要带这个 cookie，否则 403。
-  - 代理只监听回环、只转发到设置里的思源地址；显式拒绝 `Sec-Fetch-Site: cross-site` 与 Origin/Host 不匹配；转发时剥掉 `Sec-Fetch-*`/`Origin`/`Referer` 等头（内核才放行）。
-- `lite`：插件自带的文档树 + Markdown 预览（原有能力）。
-
-客户端只负责拼 URL、不读 iframe 内部 DOM、不注入样式；远程访问（GUI 不是 `127.0.0.1`/`localhost`）时嵌入不可用，客户端提示切「简易视图」。
-
 ## GET `/siyuan/doc?id=`
 
 `id` 可以是文档 id、块 id，或**精确的 /完整/路径**；缺省返回前 1500 行（`limit` 可调，上限 3000）。

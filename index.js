@@ -9,11 +9,7 @@
  * 只走思源内核 HTTP API（默认 http://127.0.0.1:6806），不碰 .sy 文件、不直连 siyuan.db。
  */
 
-import crypto from 'node:crypto'
 import { promises as fs } from 'node:fs'
-import http from 'node:http'
-import https from 'node:https'
-import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -24,7 +20,6 @@ const CREDENTIAL_KEY = 'siyuan'
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:6806'
 const MAX_LIMIT = 100
 const ROUTE_PREFIX = '/siyuan'
-const EMBED_PROXY_PORT = Number(process.env.SIYUAN_EMBED_PORT || 48766)
 
 const DEFAULT_SETTINGS = {
   endpoint: DEFAULT_ENDPOINT,
@@ -33,9 +28,7 @@ const DEFAULT_SETTINGS = {
   write: false,
   readOnlySqlLimit: 100,
   showViewTab: true,
-  showComposerButton: true,
-  // embed = 直接嵌入思源自己的 Web 界面（默认）；lite = 插件自带的文档树 + Markdown 预览
-  viewMode: 'embed'
+  showComposerButton: true
 }
 
 /* ------------------------------------------------------------------ */
@@ -91,7 +84,6 @@ async function saveSettings(patch) {
   next.write = Boolean(next.write)
   next.showViewTab = next.showViewTab !== false
   next.showComposerButton = next.showComposerButton !== false
-  next.viewMode = next.viewMode === 'lite' ? 'lite' : 'embed'
   await fs.mkdir(STORAGE_DIR, { recursive: true })
   await fs.writeFile(CONFIG_FILE, JSON.stringify(next, null, 2), 'utf8')
   return next
@@ -755,334 +747,6 @@ async function readJsonBody(req, limitBytes = 2 * 1024 * 1024) {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* 嵌入代理（带凭证的本地反向代理）                                     */
-/*                                                                     */
-/* 背景：思源内核会拒绝浏览器的「跨站请求」（Sec-Fetch-Site 不是         */
-/* same-origin/none 时返回 401「不允许跨站请求」），所以 DSH 页面里的   */
-/* iframe 直接指向 6806 会被拒。这里在 127.0.0.1 上起一个反向代理：      */
-/* 浏览器同源访问代理，代理用干净的请求头访问内核（服务端请求没有       */
-/* Sec-Fetch-* 头，内核放行）。                                        */
-/*                                                                     */
-/* 数据安全（重要）：                                                   */
-/*  - 只监听 127.0.0.1，不对外网开放；只转发到设置里的思源地址；         */
-/*  - 每次 Host 启动生成随机入口凭证（EMBED_SECRET），入口地址是一次性   */
-/*    跳转：先种一个 HttpOnly + SameSite=Strict 的 cookie，再 302 到    */
-/*    真实路径——恶意网页拿不到 cookie（跨站不发送），也就用不了代理；    */
-/*  - 显式拒绝 Sec-Fetch-Site: cross-site、拒绝 Origin/Host 不匹配；     */
-/*  - 拒绝时什么都不转发，只返回 403 提示；                              */
-/*  - WebSocket（/ws）走同一套校验。                                     */
-/* ------------------------------------------------------------------ */
-
-const EMBED_COOKIE_NAME = 'dsh_siyuan_embed'
-const EMBED_SECRET = crypto.randomBytes(24).toString('hex')
-const EMBED_ENTRY_PREFIX = '/__embed/' + EMBED_SECRET + '/'
-
-const EMBED_PROXY_DROP_HEADERS = [
-  'host',
-  'origin',
-  'referer',
-  'sec-fetch-site',
-  'sec-fetch-mode',
-  'sec-fetch-dest',
-  'sec-fetch-user',
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'trailers',
-  'transfer-encoding',
-  'upgrade'
-]
-
-const embedProxy = { server: null, port: 0, target: null, starting: null }
-
-function parseEndpointTarget(endpoint) {
-  try {
-    const url = new URL(normalizeEndpoint(endpoint))
-    const secure = url.protocol === 'https:'
-    return {
-      host: url.hostname,
-      port: Number(url.port || (secure ? 443 : 80)),
-      secure
-    }
-  } catch {
-    return { host: '127.0.0.1', port: 6806, secure: false }
-  }
-}
-
-function refreshEmbedTarget(endpoint) {
-  embedProxy.target = parseEndpointTarget(endpoint)
-}
-
-function proxyRequestHeaders(req, target) {
-  const out = {}
-  for (const [key, value] of Object.entries(req.headers)) {
-    if (EMBED_PROXY_DROP_HEADERS.includes(key.toLowerCase())) continue
-    out[key] = value
-  }
-  out.host = `${target.host}:${target.port}`
-  return out
-}
-
-function proxyResponseHeaders(headers) {
-  const out = { ...headers }
-  delete out['x-frame-options']
-  delete out['content-security-policy']
-  delete out['content-security-policy-report-only']
-  delete out['connection']
-  delete out['keep-alive']
-  delete out['transfer-encoding']
-  return out
-}
-
-function embedHostAllowed(hostHeader, port) {
-  const value = String(hostHeader || '').toLowerCase()
-  return (
-    value === `127.0.0.1:${port}` ||
-    value === `localhost:${port}` ||
-    value === `[::1]:${port}` ||
-    value === `::1:${port}`
-  )
-}
-
-function embedOriginAllowed(originHeader, port) {
-  const value = String(originHeader || '').toLowerCase()
-  if (!value) return true
-  return (
-    value === `http://127.0.0.1:${port}` ||
-    value === `http://localhost:${port}` ||
-    value === `http://[::1]:${port}`
-  )
-}
-
-function embedIsCrossSite(req) {
-  return String((req.headers && req.headers['sec-fetch-site']) || '').toLowerCase() === 'cross-site'
-}
-
-function parseCookieHeader(header) {
-  const out = {}
-  for (const part of String(header || '').split(';')) {
-    const index = part.indexOf('=')
-    if (index < 0) continue
-    const key = part.slice(0, index).trim()
-    if (!key) continue
-    out[key] = part.slice(index + 1).trim()
-  }
-  return out
-}
-
-function embedTokenOk(req) {
-  const token = parseCookieHeader(req.headers && req.headers.cookie)[EMBED_COOKIE_NAME] || ''
-  if (!token || token.length !== EMBED_SECRET.length) return false
-  try {
-    return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(EMBED_SECRET))
-  } catch {
-    return false
-  }
-}
-
-function denyEmbed(res, reason) {
-  try {
-    res.writeHead(403, {
-      'content-type': 'text/html; charset=utf-8',
-      'cache-control': 'no-store',
-      'x-content-type-options': 'nosniff'
-    })
-    res.end(
-      '<!doctype html><meta charset="utf-8"><title>思源笔记</title>' +
-        '<body style="font:14px/1.6 system-ui;padding:20px;color:#333">' +
-        '<h3 style="margin:0 0 8px">思源笔记嵌入代理拒绝了这次请求</h3>' +
-        '<div>原因：' +
-        reason +
-        '。请从 DSH 的「思源笔记」面板打开，不要直接用这个地址。</div></body>'
-    )
-  } catch {
-    /* 连接已断开 */
-  }
-}
-
-function handleEmbedProxyRequest(req, res) {
-  const port = embedProxy.port
-  if (!embedHostAllowed(req.headers && req.headers.host, port)) {
-    denyEmbed(res, '主机名不匹配')
-    return
-  }
-  let url
-  try {
-    url = new URL(req.url || '/', 'http://127.0.0.1')
-  } catch {
-    denyEmbed(res, '地址无效')
-    return
-  }
-  const entryPath =
-    url.pathname === EMBED_ENTRY_PREFIX || url.pathname === EMBED_ENTRY_PREFIX.slice(0, -1)
-  if (!entryPath) {
-    if (embedIsCrossSite(req)) {
-      denyEmbed(res, '跨站请求')
-      return
-    }
-    if (!embedOriginAllowed(req.headers && req.headers.origin, port)) {
-      denyEmbed(res, '来源不匹配')
-      return
-    }
-    if (!embedTokenOk(req)) {
-      denyEmbed(res, '未持有嵌入凭证')
-      return
-    }
-  }
-
-  const target = embedProxy.target || parseEndpointTarget(DEFAULT_ENDPOINT)
-  const transport = target.secure ? https : http
-  // 入口导航来自 DSH 页面。桌面端页面是 dsh-app:// 自定义协议，对 http 代理必然
-  // 是跨站请求，所以入口只认路径里的随机凭证、允许跨站；并且不能做 302
-  // （SameSite=Strict 的 cookie 不会跟随跨站跳转发送），直接返回桌面端构建页并种 cookie。
-  const requestPath = entryPath
-    ? '/stage/build/desktop/' + (url.search || '')
-    : req.url
-  const upstream = transport.request(
-    {
-      host: target.host,
-      port: target.port,
-      path: requestPath,
-      method: req.method,
-      headers: proxyRequestHeaders(req, target)
-    },
-    (upstreamResponse) => {
-      const headers = proxyResponseHeaders(upstreamResponse.headers)
-      if (entryPath) {
-        const cookie = `${EMBED_COOKIE_NAME}=${EMBED_SECRET}; Path=/; HttpOnly; SameSite=Strict`
-        const existing = headers['set-cookie']
-        headers['set-cookie'] = Array.isArray(existing)
-          ? existing.concat([cookie])
-          : existing
-            ? [existing, cookie]
-            : [cookie]
-        headers['cache-control'] = 'no-store'
-      }
-      try {
-        res.writeHead(upstreamResponse.statusCode || 502, headers)
-      } catch {
-        /* 响应头已发送 */
-      }
-      upstreamResponse.pipe(res)
-    }
-  )
-  upstream.on('error', (error) => {
-    const message = String((error && error.message) || error)
-    if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
-    res.end('思源嵌入代理错误：' + message)
-  })
-  req.pipe(upstream)
-}
-
-function handleEmbedProxyUpgrade(req, socket, head) {
-  const port = embedProxy.port
-  const blocked =
-    !embedHostAllowed(req.headers && req.headers.host, port) ||
-    embedIsCrossSite(req) ||
-    !embedOriginAllowed(req.headers && req.headers.origin, port) ||
-    !embedTokenOk(req)
-  if (blocked) {
-    try {
-      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
-    } catch {
-      /* 已断开 */
-    }
-    return
-  }
-  const target = embedProxy.target || parseEndpointTarget(DEFAULT_ENDPOINT)
-  const upstream = net.connect(target.port, target.host, () => {
-    const headers = proxyRequestHeaders(req, target)
-    headers.connection = 'Upgrade'
-    headers.upgrade = req.headers.upgrade || 'websocket'
-    const lines = [`${req.method} ${req.url} HTTP/1.1`]
-    for (const [key, value] of Object.entries(headers)) {
-      if (Array.isArray(value)) for (const item of value) lines.push(`${key}: ${item}`)
-      else lines.push(`${key}: ${value}`)
-    }
-    upstream.write(lines.join('\r\n') + '\r\n\r\n')
-    if (head && head.length) upstream.write(head)
-    upstream.pipe(socket)
-    socket.pipe(upstream)
-  })
-  upstream.on('error', () => socket.destroy())
-  socket.on('error', () => upstream.destroy())
-}
-
-function listenEmbedProxy(server, preferredPort) {
-  return new Promise((resolve) => {
-    const attempt = (port) => {
-      const onError = (error) => {
-        server.removeListener('error', onError)
-        if (error && error.code === 'EADDRINUSE' && port !== 0) {
-          attempt(0)
-          return
-        }
-        resolve(0)
-      }
-      server.once('error', onError)
-      server.listen(port, '127.0.0.1', () => {
-        server.removeListener('error', onError)
-        const address = server.address()
-        resolve(address && typeof address === 'object' ? address.port : 0)
-      })
-    }
-    attempt(preferredPort)
-  })
-}
-
-async function startEmbedProxy() {
-  if (embedProxy.server) return embedProxy.port
-  if (embedProxy.starting) return embedProxy.starting
-  embedProxy.starting = (async () => {
-    try {
-      const settings = await loadSettings()
-      refreshEmbedTarget(settings.endpoint)
-      const server = http.createServer(handleEmbedProxyRequest)
-      server.on('upgrade', handleEmbedProxyUpgrade)
-      const port = await listenEmbedProxy(server, EMBED_PROXY_PORT)
-      if (!port) {
-        console.error('[dsh-siyuan] 思源嵌入代理未能监听端口')
-        return 0
-      }
-      embedProxy.server = server
-      embedProxy.port = port
-      return port
-    } catch (error) {
-      console.error('[dsh-siyuan] 思源嵌入代理启动失败', error)
-      return 0
-    } finally {
-      embedProxy.starting = null
-    }
-  })()
-  return embedProxy.starting
-}
-
-function stopEmbedProxy() {
-  const server = embedProxy.server
-  embedProxy.server = null
-  embedProxy.port = 0
-  embedProxy.starting = null
-  if (server) {
-    try {
-      server.close()
-    } catch {
-      /* 已关闭 */
-    }
-  }
-}
-
-/** 浏览器 iframe 应使用的入口地址（带一次性凭证路径；代理未就绪时为空）。 */
-function embedBaseUrl(req) {
-  if (!embedProxy.port) return ''
-  const requestHost = String((req && req.headers && req.headers.host) || '').toLowerCase()
-  const hostName = requestHost.startsWith('localhost:') ? 'localhost' : '127.0.0.1'
-  return `http://${hostName}:${embedProxy.port}${EMBED_ENTRY_PREFIX}`
-}
-
 function makeHttpHandler(ctx) {
   return async function handler(req, res) {
     const send = (status, payload) => {
@@ -1133,8 +797,7 @@ function makeHttpHandler(ctx) {
             notebooks,
             settings: { ...settings, endpoint },
             tokenConfigured,
-            write: Boolean(settings.write),
-            embedBase: embedBaseUrl(req)
+            write: Boolean(settings.write)
           })
         } catch (error) {
           const failure = asFailure(error)
@@ -1145,8 +808,7 @@ function makeHttpHandler(ctx) {
             notebooks: [],
             settings: { ...settings, endpoint },
             tokenConfigured,
-            write: Boolean(settings.write),
-            embedBase: embedBaseUrl(req)
+            write: Boolean(settings.write)
           })
         }
         return
@@ -1297,8 +959,7 @@ function makeHttpHandler(ctx) {
           ok: true,
           settings: { ...settings, endpoint },
           tokenConfigured: Boolean(token),
-          write: Boolean(settings.write),
-          embedBase: embedBaseUrl(req)
+          write: Boolean(settings.write)
         })
         return
       }
@@ -1319,21 +980,16 @@ function makeHttpHandler(ctx) {
         if (Object.prototype.hasOwnProperty.call(body, 'showComposerButton')) {
           patch.showComposerButton = Boolean(body.showComposerButton)
         }
-        if (Object.prototype.hasOwnProperty.call(body, 'viewMode')) {
-          patch.viewMode = body.viewMode === 'lite' ? 'lite' : 'embed'
-        }
         if (Object.prototype.hasOwnProperty.call(body, 'write')) patch.write = Boolean(body.write)
         if (Object.prototype.hasOwnProperty.call(body, 'token')) {
           await writeToken(ctx, body.token)
         }
         const next = await saveSettings(patch)
-        refreshEmbedTarget(next.endpoint)
         send(200, {
           ok: true,
           settings: next,
           tokenConfigured: Boolean(await readToken(ctx)),
-          write: Boolean(next.write),
-          embedBase: embedBaseUrl(req)
+          write: Boolean(next.write)
         })
         return
       }
@@ -1667,12 +1323,6 @@ const SYSTEM_PROMPT_SECTION = `思源笔记 (SiYuan) 已在工具里接入（siy
 /* ------------------------------------------------------------------ */
 
 export function apply(ctx) {
-  // 嵌入代理：只监听 127.0.0.1，供浏览器 iframe 同源访问思源 Web UI
-  ctx.effect(() => {
-    startEmbedProxy().catch((error) => console.error('[dsh-siyuan] 嵌入代理启动异常', error))
-    return () => stopEmbedProxy()
-  })
-
   ctx.inject(['tools'], (toolsContext) => {
     try {
       const tools = buildTools(ctx)
