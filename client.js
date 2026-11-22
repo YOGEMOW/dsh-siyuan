@@ -655,7 +655,7 @@ window.__ModuleLoader__.load({
           setTokenConfigured(!!res.tokenConfigured)
           setToken('')
           // 两个入口开关就地生效（不用刷新）
-          applySettingsFlags(settings)
+          applySettingsFlags(settings, res.embedBase)
           setShowViewTab(uiFlags.showViewTab)
           setShowComposerButton(uiFlags.showComposerButton)
           setViewMode(uiFlags.viewMode)
@@ -3830,6 +3830,7 @@ window.__ModuleLoader__.load({
       const ui = useUiFlags()
 
       const [endpoint, setEndpoint] = React.useState('')
+      const [embedBase, setEmbedBase] = React.useState('')
       const [loading, setLoading] = React.useState(true)
       const [reloadKey, setReloadKey] = React.useState(1)
       const [busy, setBusy] = React.useState(false)
@@ -3850,6 +3851,7 @@ window.__ModuleLoader__.load({
           }
           const settings = res.settings && typeof res.settings === 'object' ? res.settings : {}
           setEndpoint(textOf(settings.endpoint).replace(/\/+$/, ''))
+          setEmbedBase(textOf(res.embedBase))
         },
         [alive, track]
       )
@@ -3904,11 +3906,20 @@ window.__ModuleLoader__.load({
         [alive, track, ui.viewMode]
       )
 
-      const src = endpoint
+      // 思源内核拒绝浏览器跨站请求，iframe 必须走 Host 的本机反向代理（embedBase）
+      const src = embedBase
         ? docId
-          ? endpoint + '/?id=' + encodeURIComponent(docId)
-          : endpoint + '/'
+          ? embedBase + '?id=' + encodeURIComponent(docId)
+          : embedBase
         : ''
+
+      let localHost = true
+      try {
+        const host = typeof window !== 'undefined' && window.location ? window.location.hostname : ''
+        localHost = host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]' || host === ''
+      } catch (error) {
+        localHost = true
+      }
 
       const toolbar = h(
         'div',
@@ -3959,7 +3970,23 @@ window.__ModuleLoader__.load({
       )
 
       let frame
-      if (!endpoint) {
+      if (!localHost) {
+        frame = h(
+          'div',
+          { style: { display: 'grid', gap: 10, padding: 16, alignContent: 'start' } },
+          h(
+            'div',
+            { style: { fontSize: 12, lineHeight: '20px', color: T.sub } },
+            '远程访问下无法嵌入思源界面：嵌入代理只监听本机 127.0.0.1。请切到「简易视图」，或在浏览器里直接打开思源。'
+          ),
+          h(
+            GhostButton,
+            { small: true, kind: 'primary', disabled: busy, onClick: switchMode },
+            busy ? '切换中…' : '切换简易视图'
+          ),
+          actionFail ? h(FailLine, { fail: actionFail, prefix: '切换失败：' }) : null
+        )
+      } else if (!endpoint) {
         frame = h(
           'div',
           { style: { display: 'grid', gap: 10, padding: 16, alignContent: 'start' } },
@@ -3970,6 +3997,22 @@ window.__ModuleLoader__.load({
                 { style: { fontSize: 12, lineHeight: '20px', color: T.sub } },
                 '还没有配置思源地址：先在「设置 → 思源笔记」里填好端点（例如 http://127.0.0.1:6806），再回到这里。'
               ),
+          settingsFail
+            ? h(FailLine, { fail: settingsFail, prefix: '读取设置失败：', onRetry: loadEndpoint })
+            : null
+        )
+      } else if (!embedBase) {
+        frame = h(
+          'div',
+          { style: { display: 'grid', gap: 10, padding: 16, alignContent: 'start' } },
+          h(
+            'div',
+            { style: { fontSize: 12, lineHeight: '20px', color: T.sub } },
+            loading
+              ? '正在准备嵌入代理…'
+              : '嵌入代理还没就绪：Host 没有返回代理地址。可点「刷新」重试；一直不行就切「简易视图」，或看 Host 日志里 dsh-siyuan 的提示。'
+          ),
+          h(GhostButton, { small: true, onClick: refresh }, '刷新'),
           settingsFail
             ? h(FailLine, { fail: settingsFail, prefix: '读取设置失败：', onRetry: loadEndpoint })
             : null
@@ -4137,7 +4180,7 @@ window.__ModuleLoader__.load({
     // UI 开关 / 显示方式：对话区页签、输入框按钮、完整界面 or 简易视图
     // 模块级状态 + 订阅，设置里保存后即时生效（不刷新）
     // ─────────────────────────────────────────────────────────────
-    let uiFlags = { showViewTab: true, showComposerButton: true, viewMode: 'embed' }
+    let uiFlags = { showViewTab: true, showComposerButton: true, viewMode: 'embed', embedBase: '' }
     const uiSubscribers = new Set()
 
     function normalizeUiFlags(source) {
@@ -4145,7 +4188,8 @@ window.__ModuleLoader__.load({
       return {
         showViewTab: value.showViewTab !== false,
         showComposerButton: value.showComposerButton !== false,
-        viewMode: value.viewMode === 'lite' ? 'lite' : 'embed'
+        viewMode: value.viewMode === 'lite' ? 'lite' : 'embed',
+        embedBase: textOf(value.embedBase)
       }
     }
 
@@ -4157,7 +4201,8 @@ window.__ModuleLoader__.load({
       return (
         a.showViewTab === b.showViewTab &&
         a.showComposerButton === b.showComposerButton &&
-        a.viewMode === b.viewMode
+        a.viewMode === b.viewMode &&
+        a.embedBase === b.embedBase
       )
     }
 
@@ -4251,12 +4296,13 @@ window.__ModuleLoader__.load({
     }
 
     /** 从 settings 对象同步入口开关与显示方式（缺字段按默认：都显示 / 完整界面）。 */
-    function applySettingsFlags(settings) {
+    function applySettingsFlags(settings, embedBase) {
       const value = settings && typeof settings === 'object' ? settings : {}
       setUiFlags({
         showViewTab: value.showViewTab !== false,
         showComposerButton: value.showComposerButton !== false,
-        viewMode: value.viewMode === 'lite' ? 'lite' : 'embed'
+        viewMode: value.viewMode === 'lite' ? 'lite' : 'embed',
+        embedBase: textOf(embedBase)
       })
       syncConversationView(uiFlags.showViewTab)
     }
@@ -4326,7 +4372,7 @@ window.__ModuleLoader__.load({
           getJSON('/settings')
             .then(function (res) {
               if (res && res.ok && res.settings && typeof res.settings === 'object') {
-                applySettingsFlags(res.settings)
+                applySettingsFlags(res.settings, res.embedBase)
               }
             })
             .catch(function () {

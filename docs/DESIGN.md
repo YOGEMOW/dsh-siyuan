@@ -274,35 +274,49 @@ ctx.inject(['sidebarRightTabs'], (owner) => {
 
 用户反馈自研的文档树 + Markdown 预览「不方便用」，要「像浏览器登录思源笔记界面那样」——文档树、编辑器、搜索、设置都在。结论：**不做第二套编辑器，直接嵌思源 Web UI**。
 
-### 13.1 为什么 iframe 可行
+### 13.1 直接 iframe 不行：内核拒绝跨站请求
 
-实测（思源 3.8.9）：
+实测（思源 3.8.11）：
 
-- `GET http://127.0.0.1:6806/` → 302 到 `/stage/build/desktop/?r=…`；
-- 响应头**没有** `X-Frame-Options`，也没有 CSP `frame-ancestors` → 可被 DSH 页面 iframe；
-- `ws://127.0.0.1:6806/ws` 用异源 `Origin: http://127.0.0.1:48765` 握手返回 Open → 嵌入后编辑器能实时同步；
-- `/?id=<docId>` 是思源原生「复制网页链接」形式，可定位到具体文档。
+- 页面本身没有 `X-Frame-Options` / CSP `frame-ancestors`，看起来能嵌；
+- 但内核在请求层拦跨站：`Sec-Fetch-Site: same-site`（DSH 在 48765、思源在 6806，同站不同源）或 `cross-site` 直接 401「不允许跨站请求」，只有 `same-origin` / `none`（顶层导航）才放行；
+- 因此浏览器 iframe 从 DSH 指向 6806 会看到 401 JSON，**不能直接嵌**。
 
-不采用「Host 反向代理整个思源前端」：那要把 HTML/JS/CSS/字体/API/WebSocket 全部改写转发、处理绝对路径与压缩编码，成本远高于收益，且仍绕不开跨域状态问题。
+### 13.2 方案：带凭证的本地反向代理
 
-### 13.2 实现
+Host 在 `127.0.0.1` 上起反向代理（首选 48766，占用则随机回环端口；`SIYUAN_EMBED_PORT` 可覆盖），浏览器 iframe 访问代理，代理再用**没有 `Sec-Fetch-*` 头**的服务端请求访问内核（内核放行），并转发 WebSocket（`/ws`）。
+
+数据安全设计（这是这一版的重点）：
+
+1. **只监听回环**，不对外网开放；只转发到设置里的思源地址（不是任意 URL，避免成为通用 SSRF 跳板）。
+2. **每次 Host 启动生成随机凭证**（24 字节），入口地址 `http://127.0.0.1:PORT/__embed/<凭证>/` 只做一次 302：先种 `HttpOnly; SameSite=Strict` 的 cookie，再跳到真实路径。凭证不留在地址栏/Referer 里。
+3. **所有后续请求校验 cookie**（`timingSafeEqual`），没有凭证一律 403，什么都不转发；WebSocket 同规则。
+4. **显式拒绝跨站**：`Sec-Fetch-Site: cross-site` 一律 403；`Origin` 只允许代理自身来源；`Host` 只允许 `127.0.0.1|localhost|[::1]:PORT`。
+   - 恶意网页即使用户浏览器里开着思源，也拿不到 Strict cookie（跨站不发送），打不到代理；
+   - 即使浏览器自动访问 `http://127.0.0.1:PORT/`，没有 cookie 也只有 403 页面。
+5. 代理不保存任何笔记数据、不缓存响应（`no-store` 只用于入口跳转与拒绝页），也不引入新的写入路径：真正写笔记仍然只走内核 API，且受「写入开关 + 只读 SQL + 无删除」三重约束。
+
+### 13.3 实现
 
 - 新增设置 `viewMode: 'embed' | 'lite'`，默认 `embed`。
-- `SiyuanEmbed({ docId, compact })`：flex 撑满的 iframe（**不加 sandbox**，否则脚本/存储失效；不读内部 DOM、不注入样式），src = `${endpoint}/` 或 `${endpoint}/?id=<docId>`；顶栏有刷新（换 key 重载）、在浏览器打开（compact 隐藏）、完整界面↔简易视图切换（写 `POST /siyuan/settings` 后就地生效）。
-- 三个入口统一按 `viewMode` 二选一：左栏 `main`、对话区 `conversation.view`、右栏 tab 用 embed；`lite` 时回到原来的 `MainPanel` / `NoteSidebarView`（文档树、预览、追加、位置记忆都保留）。
-- 设置页新增「显示方式」分段，说明两种模式的差别。
+- `SiyuanEmbed({ docId, compact })`：flex 撑满的 iframe（**不加 sandbox**，否则脚本/存储失效；不读内部 DOM、不注入样式），src = Host 返回的 `embedBase`（带凭证入口）+ 可选 `?id=<docId>`；顶栏有刷新（换 key 重载）、在浏览器打开（打开原始 6806 地址）、完整界面↔简易视图切换。
+- `GET /siyuan/settings` / `/status` 返回顶层 `embedBase`；客户端本地只接受 `127.0.0.1`/`localhost` 时使用（远程访问下提示切简易视图，因为代理只监听回环）。
+- 三个入口统一按 `viewMode` 二选一：左栏 `main`、对话区 `conversation.view`、右栏 tab 用 embed；`lite` 时回到原来的 `MainPanel` / `NoteSidebarView`。
+- 设置页新增「显示方式」分段。
 
-### 13.3 取舍与限制
+### 13.4 取舍与限制
 
-- **好处**：编辑/搜索/大纲/块引用/插件全都用思源原生的，零维护成本；DSH 里不再有「阉割版」。
-- **代价**：iframe 里是独立应用，主题/快捷键不跟随 DSH；跨域读不到内部状态，重载/切换不保留滚动与编辑位置（内容已即时保存）；简易视图的 `defaultDoc` 自动打开在 embed 下不生效（直接开思源 UI，带当前笔记 id 时拼 `?id=`）。
-- 右栏宽度有限，embed 下思源界面会偏窄，可切换简易视图或拉宽右栏。
+- **好处**：编辑/搜索/大纲/块引用/插件全都用思源原生的，零维护成本。
+- **代价**：iframe 里是独立应用，主题/快捷键不跟随 DSH；跨域读不到内部状态，重载/切换不保留滚动与编辑位置（内容已即时保存）；简易视图的 `defaultDoc` 自动打开在 embed 下不生效。
+- 远程访问（GUI 不是 127.0.0.1/localhost）时嵌入不可用，用简易视图。
+- 右栏宽度有限，embed 下思源界面会偏窄，可切简易视图或拉宽右栏。
 
-### 13.4 验证
+### 13.5 验证
 
-- `node --check` 通过；客户端 jsdom/React18 冒烟 39 项（iframe 属性与 src、`?id=`、compact 工具条、模式切换 POST 与就地切换、启动即 lite、设置页往返、空端点/读设置失败不白屏、旧开关回归）。
-- iframe 可行性：响应头与 WS 握手实测（见 13.1）。
-- Host 设置 `viewMode` 读写往返与 e2e 53 项在安装后回归。
+- `node --check` 通过；客户端 jsdom/React18 冒烟 39 项（iframe 属性与 src、`?id=`、compact 工具条、模式切换、启动即 lite、设置页往返、空端点/读设置失败不白屏、旧开关回归）。
+- 代理安全行为实测：无 cookie → 403；`Sec-Fetch-Site: cross-site` → 403；入口地址 → 302 + Strict cookie；带 cookie 正常 200；`Origin` 不匹配 → 403；Host 不匹配 → 403；WS 无 cookie → 拒绝、有 cookie → Open。
+- 浏览器实测：无头 Chromium 通过代理 iframe 完整渲染思源界面（文档树、编辑器、搜索都在，WebSocket 通）。
+
 
 
 
