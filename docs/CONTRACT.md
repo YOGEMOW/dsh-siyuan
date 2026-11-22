@@ -92,6 +92,15 @@ Client 只通过下面这组同源 HTTP 路由与 Host 通信；**Token 永不�
 
 关闭后左栏「思源笔记」面板与右侧栏「思源笔记」标签不受影响。客户端保存设置后就地生效。
 
+## 设置项 `viewMode`
+
+`'embed' | 'lite'`，默认 `'embed'`：三个界面入口（左栏 main、对话区 `conversation.view`、右栏 tab）按它二选一。
+
+- `embed`：iframe 直接嵌入思源 Web UI。地址 = `${endpoint}/`（思源根路径 302 到 `/stage/build/desktop/`），带当前笔记时 `${endpoint}/?id=<docId>`（思源原生网页链接形式）。实测思源响应头无 `X-Frame-Options` / CSP `frame-ancestors`，且 `ws://` 握手接受异源 Origin，可嵌。
+- `lite`：插件自带的文档树 + Markdown 预览（原有能力）。
+
+客户端只负责拼 URL、不读 iframe 内部 DOM、不注入样式；刷新与滚动位置不跨重载保留。
+
 ## GET `/siyuan/doc?id=`
 
 `id` 可以是文档 id、块 id，或**精确的 /完整/路径**；缺省返回前 1500 行（`limit` 可调，上限 3000）。

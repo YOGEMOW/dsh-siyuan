@@ -28,7 +28,9 @@ const DEFAULT_SETTINGS = {
   write: false,
   readOnlySqlLimit: 100,
   showViewTab: true,
-  showComposerButton: true
+  showComposerButton: true,
+  // embed = 直接嵌入思源自己的 Web 界面（默认）；lite = 插件自带的文档树 + Markdown 预览
+  viewMode: 'embed'
 }
 
 /* ------------------------------------------------------------------ */
@@ -84,6 +86,7 @@ async function saveSettings(patch) {
   next.write = Boolean(next.write)
   next.showViewTab = next.showViewTab !== false
   next.showComposerButton = next.showComposerButton !== false
+  next.viewMode = next.viewMode === 'lite' ? 'lite' : 'embed'
   await fs.mkdir(STORAGE_DIR, { recursive: true })
   await fs.writeFile(CONFIG_FILE, JSON.stringify(next, null, 2), 'utf8')
   return next
@@ -979,6 +982,9 @@ function makeHttpHandler(ctx) {
         }
         if (Object.prototype.hasOwnProperty.call(body, 'showComposerButton')) {
           patch.showComposerButton = Boolean(body.showComposerButton)
+        }
+        if (Object.prototype.hasOwnProperty.call(body, 'viewMode')) {
+          patch.viewMode = body.viewMode === 'lite' ? 'lite' : 'embed'
         }
         if (Object.prototype.hasOwnProperty.call(body, 'write')) patch.write = Boolean(body.write)
         if (Object.prototype.hasOwnProperty.call(body, 'token')) {

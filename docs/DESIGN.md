@@ -268,5 +268,42 @@ ctx.inject(['sidebarRightTabs'], (owner) => {
 - 关闭页签时客户端拿不到「当前是否正停在思源视图」的可靠信号，所以无条件提示「切回『对话』即可」——不会误伤，只是可能多一句。
 - 若想让左栏/右栏也受开关控制，需要重新定义开关语义（当前有意不受控）。
 
+---
+
+## 十三、v5：默认嵌入思源自己的 Web 界面（iframe）
+
+用户反馈自研的文档树 + Markdown 预览「不方便用」，要「像浏览器登录思源笔记界面那样」——文档树、编辑器、搜索、设置都在。结论：**不做第二套编辑器，直接嵌思源 Web UI**。
+
+### 13.1 为什么 iframe 可行
+
+实测（思源 3.8.9）：
+
+- `GET http://127.0.0.1:6806/` → 302 到 `/stage/build/desktop/?r=…`；
+- 响应头**没有** `X-Frame-Options`，也没有 CSP `frame-ancestors` → 可被 DSH 页面 iframe；
+- `ws://127.0.0.1:6806/ws` 用异源 `Origin: http://127.0.0.1:48765` 握手返回 Open → 嵌入后编辑器能实时同步；
+- `/?id=<docId>` 是思源原生「复制网页链接」形式，可定位到具体文档。
+
+不采用「Host 反向代理整个思源前端」：那要把 HTML/JS/CSS/字体/API/WebSocket 全部改写转发、处理绝对路径与压缩编码，成本远高于收益，且仍绕不开跨域状态问题。
+
+### 13.2 实现
+
+- 新增设置 `viewMode: 'embed' | 'lite'`，默认 `embed`。
+- `SiyuanEmbed({ docId, compact })`：flex 撑满的 iframe（**不加 sandbox**，否则脚本/存储失效；不读内部 DOM、不注入样式），src = `${endpoint}/` 或 `${endpoint}/?id=<docId>`；顶栏有刷新（换 key 重载）、在浏览器打开（compact 隐藏）、完整界面↔简易视图切换（写 `POST /siyuan/settings` 后就地生效）。
+- 三个入口统一按 `viewMode` 二选一：左栏 `main`、对话区 `conversation.view`、右栏 tab 用 embed；`lite` 时回到原来的 `MainPanel` / `NoteSidebarView`（文档树、预览、追加、位置记忆都保留）。
+- 设置页新增「显示方式」分段，说明两种模式的差别。
+
+### 13.3 取舍与限制
+
+- **好处**：编辑/搜索/大纲/块引用/插件全都用思源原生的，零维护成本；DSH 里不再有「阉割版」。
+- **代价**：iframe 里是独立应用，主题/快捷键不跟随 DSH；跨域读不到内部状态，重载/切换不保留滚动与编辑位置（内容已即时保存）；简易视图的 `defaultDoc` 自动打开在 embed 下不生效（直接开思源 UI，带当前笔记 id 时拼 `?id=`）。
+- 右栏宽度有限，embed 下思源界面会偏窄，可切换简易视图或拉宽右栏。
+
+### 13.4 验证
+
+- `node --check` 通过；客户端 jsdom/React18 冒烟 39 项（iframe 属性与 src、`?id=`、compact 工具条、模式切换 POST 与就地切换、启动即 lite、设置页往返、空端点/读设置失败不白屏、旧开关回归）。
+- iframe 可行性：响应头与 WS 握手实测（见 13.1）。
+- Host 设置 `viewMode` 读写往返与 e2e 53 项在安装后回归。
+
+
 
 
